@@ -21,7 +21,7 @@ Un générateur d'albums photo en PDF, accessible depuis un navigateur web, con�
 
 ## Capture d'écran
 
-> ![Interface](screenshots/interface.jpg
+![Interface](screenshots/interface.png).
 
 ---
 
