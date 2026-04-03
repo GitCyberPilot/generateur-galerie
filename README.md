@@ -21,7 +21,7 @@ Un générateur d'albums photo en PDF, accessible depuis un navigateur web, con�
 
 ## Capture d'écran
 
-> *Interface web sur Android*
+> ![Interface](screenshots/interface.jpg
 
 ---
 
