@@ -1,15 +1,20 @@
 # --- CORRECTION CRITIQUE TERMUX:WIDGET ---
-# Doit être en TOUT PREMIER avant tout autre import
 import os
 import sys
 import tempfile
 
+# On vérifie si on est dans l'environnement Termux
 if os.path.exists("/data/data/com.termux"):
+    # On définit un chemin d'accès robuste dans le HOME de Termux
     termux_tmp = "/data/data/com.termux/files/home/.tmp"
-    os.makedirs(termux_tmp, exist_ok=True)
+    if not os.path.exists(termux_tmp):
+        os.makedirs(termux_tmp, exist_ok=True)
+    
+    # On force les variables d'environnement pour TOUTES les bibliothèques
     os.environ["TMPDIR"] = termux_tmp
-    tempfile.tempdir     = termux_tmp
-    # Sous Termux:Widget, stdout/stderr n'existent pas — les print() plantent
+    tempfile.tempdir = termux_tmp
+
+    # Sous Termux:Widget il n'y a pas de console, les 'print()' crashent avec [Errno 5]
     try:
         if not sys.stdout or not sys.stdout.isatty():
             sys.stdout = open(os.devnull, 'w')
@@ -17,7 +22,7 @@ if os.path.exists("/data/data/com.termux"):
     except Exception:
         sys.stdout = open(os.devnull, 'w')
         sys.stderr = open(os.devnull, 'w')
-# ------------------------------------------
+# ----------------------------------------
 
 # --- Imports critiques avec messages d'erreur explicites ---
 try:
@@ -41,7 +46,6 @@ except ImportError:
         "Pour l'activer : pip install pillow-heif"
     )
 
-# os déjà importé en tête — pas de double import
 import io
 import re
 import time
@@ -57,13 +61,13 @@ import logging
 
 app = Flask(__name__)
 
-# Désactiver tout logging Flask/Werkzeug pour compatibilité Termux:Widget
-logging.getLogger('werkzeug').disabled = True
-logging.getLogger('werkzeug').setLevel(logging.ERROR)
-app.logger.disabled   = True
-app.logger.propagate  = False
+# Désactiver tout logging Flask pour compatibilité Termux:Widget
+log = logging.getLogger('werkzeug')
+log.disabled = True
+log.setLevel(logging.ERROR)
+app.logger.disabled = True
 
-VERSION = "1.9"
+VERSION = "2.0"
 
 # --- HTML de l'interface ---
 HTML = r"""
@@ -131,6 +135,14 @@ HTML = r"""
             height: 18px;
             flex-shrink: 0;
             cursor: pointer;
+        }
+        .option-ligne input[type="checkbox"]:disabled {
+            cursor: not-allowed;
+            opacity: 0.4;
+        }
+        .option-ligne label.disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
         }
         .option-ligne label {
             margin: 0;
@@ -265,7 +277,8 @@ HTML = r"""
             text-align: center; margin-top: 12px;
             font-size: 0.95em; min-height: 24px;
         }
-        #status.error   { color: #dc3545; }
+        #status.error    { color: #dc3545; }
+        #status.warning  { color: #e67e00; }
         #status.success { color: #28a745; }
         #status.loading { color: #0056b3; }
     </style>
@@ -311,7 +324,14 @@ HTML = r"""
         <div class="card">
             <div class="option-ligne">
                 <input type="checkbox" id="ajustertaille" name="ajustertaille" checked>
-                <label for="ajustertaille">Taille des photos ajustée au nombre de pages. Taille par défaut : 4,3 cm.</label>
+                <label for="ajustertaille" id="label-ajustertaille">Taille des photos ajustée au nombre de pages. Taille par défaut : 4,3 cm.</label>
+            </div>
+        </div>
+
+        <div class="card">
+            <label>Nombre de pages souhaité (0 = automatique)</label>
+            <div class="option-ligne">
+                <input type="number" id="pages_cibles" name="pages_cibles" value="0" min="0" step="1">
             </div>
         </div>
 
@@ -345,6 +365,25 @@ HTML = r"""
         const progBar   = document.getElementById('progress-bar');
         const progLabel = document.getElementById('progress-label');
         const ghost     = document.getElementById('touch-ghost');
+
+        const cbAjuster    = document.getElementById('ajustertaille');
+        const labelAjuster = document.getElementById('label-ajustertaille');
+        const inputPages   = document.getElementById('pages_cibles');
+
+        // Désactiver "Taille ajustée" quand pages_cibles > 0
+        function majEtatAjuster() {
+            const pages = parseInt(inputPages.value) || 0;
+            if (pages > 0) {
+                cbAjuster.checked  = false;
+                cbAjuster.disabled = true;
+                labelAjuster.classList.add('disabled');
+            } else {
+                cbAjuster.disabled = false;
+                labelAjuster.classList.remove('disabled');
+            }
+        }
+        inputPages.addEventListener('input', majEtatAjuster);
+        inputPages.addEventListener('change', majEtatAjuster);
 
         const LIMIT_MB      = 20;
         const MAX_PX_UPLOAD = 1200;
@@ -584,6 +623,7 @@ HTML = r"""
             formData.append('numerotation', document.getElementById('numerotation').checked ? '1' : '0');
             formData.append('max3parligne', document.getElementById('max3parligne').checked ? '1' : '0');
             formData.append('ajustertaille', document.getElementById('ajustertaille').checked ? '1' : '0');
+            formData.append('pages_cibles', document.getElementById('pages_cibles').value);
 
             orderedFiles.forEach((file, i) => {
                 const blob = compressedBlobs[i];
@@ -621,8 +661,14 @@ HTML = r"""
                 const a     = document.createElement('a');
                 a.href = url; a.download = titre + '.pdf'; a.click();
                 URL.revokeObjectURL(url);
-                status.textContent = 'PDF généré et téléchargé !';
-                status.className = 'success';
+                const avertissement = response.headers.get('X-Avertissement');
+                if (avertissement) {
+                    status.textContent = '⚠️ ' + avertissement;
+                    status.className = 'warning';
+                } else {
+                    status.textContent = 'PDF généré et téléchargé !';
+                    status.className = 'success';
+                }
             } catch (err) {
                 clearInterval(ticker);
                 status.textContent = 'Erreur : ' + err.message;
@@ -641,6 +687,7 @@ HTML = r"""
 # --- Polices ---
 
 def _chemins_windows(nom_fichier):
+    """Retourne les chemins Windows courants pour une police (système + utilisateur)."""
     chemins = [f"C:/Windows/Fonts/{nom_fichier}"]
     local_app = os.environ.get('LOCALAPPDATA')
     if local_app:
@@ -649,45 +696,69 @@ def _chemins_windows(nom_fichier):
 
 
 def _installer_police_windows(chemin_src, nom_fichier):
+    """
+    Installe la police pour l'utilisateur courant sans droits admin.
+    Copie dans %LocalAppData%\\Microsoft\\Windows\\Fonts\\ et enregistre dans le registre.
+    Retourne le chemin d'installation ou None si échec.
+    """
     import shutil
     try:
         import winreg
     except ImportError:
-        return None
+        return None  # Pas sous Windows
+
     local_app = os.environ.get('LOCALAPPDATA')
     if not local_app:
         return None
+
     dossier_dest = Path(local_app) / "Microsoft" / "Windows" / "Fonts"
     dossier_dest.mkdir(parents=True, exist_ok=True)
     chemin_dest = dossier_dest / nom_fichier
+
     try:
         shutil.copy2(chemin_src, chemin_dest)
+        # Enregistrement dans le registre utilisateur (pas besoin de droits admin)
         cle = r"Software\Microsoft\Windows NT\CurrentVersion\Fonts"
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, cle, 0, winreg.KEY_SET_VALUE) as reg:
-            winreg.SetValueEx(reg, nom_fichier.replace('.ttf', ' (TrueType)'), 0, winreg.REG_SZ, str(chemin_dest))
+            winreg.SetValueEx(
+                reg,
+                nom_fichier.replace('.ttf', ' (TrueType)'),
+                0,
+                winreg.REG_SZ,
+                str(chemin_dest)
+            )
         print(f"Police installée dans {chemin_dest}")
         return str(chemin_dest)
     except Exception as e:
         print(f"Installation automatique impossible : {e}")
+        print(f"La police sera utilisée directement depuis {chemin_src}")
         return None
 
 
 def trouver_police(nom_fichier, candidats_systeme, urls_telechargement):
+    """
+    Cherche une police TTF dans les emplacements système.
+    Si introuvable, télécharge depuis plusieurs URLs de secours,
+    puis tente une installation silencieuse (Windows uniquement).
+    """
     dest = Path.home() / nom_fichier
     if dest.exists():
         return str(dest)
     for c in candidats_systeme:
         if Path(c).exists():
             return str(Path(c))
+
     print(f"{nom_fichier} introuvable, téléchargement en cours...")
     for url in urls_telechargement:
         try:
             urllib.request.urlretrieve(url, dest)
             if dest.exists() and dest.stat().st_size > 10000:
-                print("Téléchargement réussi.")
+                print(f"Téléchargement réussi.")
+                # Tentative d'installation dans les polices utilisateur (Windows)
                 if platform.system() == "Windows":
                     chemin_installe = _installer_police_windows(dest, nom_fichier)
                     if chemin_installe:
+                        # Police installée : on peut supprimer le fichier temporaire
                         try:
                             dest.unlink()
                         except Exception:
@@ -698,6 +769,7 @@ def trouver_police(nom_fichier, candidats_systeme, urls_telechargement):
             print(f"  Échec ({url}) : {e}")
         if dest.exists():
             dest.unlink(missing_ok=True)
+
     raise RuntimeError(
         f"Impossible de trouver ou télécharger {nom_fichier}.\n"
         "Sur Android/Termux : pkg install fonts-dejavu\n"
@@ -744,18 +816,30 @@ POLICE_EMOJI_PATH = None
 # --- Détection emoji ---
 
 EMOJI_RANGES = [
-    (0x2600,  0x27FF), (0x2B00,  0x2BFF),
-    (0x1F300, 0x1F5FF), (0x1F600, 0x1F64F),
-    (0x1F680, 0x1F6FF), (0x1F700, 0x1F77F),
-    (0x1F900, 0x1F9FF), (0x1FA00, 0x1FAFF),
-    (0x231A,  0x231B),  (0x23E9,  0x23F3),
-    (0x25AA,  0x25FE),  (0x2614,  0x2615),
-    (0x2648,  0x2653),  (0x267F,  0x267F),
-    (0x2693,  0x2693),  (0x26A1,  0x26A1),
-    (0x26AA,  0x26AB),  (0x26BD,  0x26BE),
-    (0x26C4,  0x26C5),  (0x26D4,  0x26D4),
-    (0x26EA,  0x26EA),  (0x26F2,  0x26F3),
-    (0x26F5,  0x26F5),  (0x26FA,  0x26FA),
+    (0x2600,  0x27FF),
+    (0x2B00,  0x2BFF),
+    (0x1F300, 0x1F5FF),
+    (0x1F600, 0x1F64F),
+    (0x1F680, 0x1F6FF),
+    (0x1F700, 0x1F77F),
+    (0x1F900, 0x1F9FF),
+    (0x1FA00, 0x1FAFF),
+    (0x231A,  0x231B),
+    (0x23E9,  0x23F3),
+    (0x25AA,  0x25FE),
+    (0x2614,  0x2615),
+    (0x2648,  0x2653),
+    (0x267F,  0x267F),
+    (0x2693,  0x2693),
+    (0x26A1,  0x26A1),
+    (0x26AA,  0x26AB),
+    (0x26BD,  0x26BE),
+    (0x26C4,  0x26C5),
+    (0x26D4,  0x26D4),
+    (0x26EA,  0x26EA),
+    (0x26F2,  0x26F3),
+    (0x26F5,  0x26F5),
+    (0x26FA,  0x26FA),
     (0x26FD,  0x26FD),
 ]
 
@@ -822,6 +906,19 @@ class GenerateurPDF(FPDF):
         self.add_font("NotoEmoji", "",  police_emoji_path)
         self.set_font("DejaVu", "", 12)
 
+    def largeur_mixte(self, texte, taille_texte, gras=False):
+        """Calcule la largeur totale d'un texte mixte (DejaVu + NotoEmoji)."""
+        taille_emoji = taille_texte + 2
+        style        = "B" if gras else ""
+        largeur      = 0.0
+        for contenu, is_emoji in segmenter_texte(texte):
+            if is_emoji:
+                self.set_font("NotoEmoji", "", taille_emoji)
+            else:
+                self.set_font("DejaVu", style, taille_texte)
+            largeur += self.get_string_width(contenu)
+        return largeur
+
     def ecrire_mixte(self, texte, taille_texte, gras=False):
         taille_emoji = taille_texte + 2
         style = "B" if gras else ""
@@ -832,11 +929,17 @@ class GenerateurPDF(FPDF):
                 self.set_font("DejaVu", style, taille_texte)
             self.write(taille_texte * 0.4, contenu)
 
+    def ecrire_mixte_centre(self, texte, taille_texte, largeur_page=210, gras=False):
+        """Écrit un texte mixte centré horizontalement sur la page."""
+        larg_texte = self.largeur_mixte(texte, taille_texte, gras)
+        x_centre   = (largeur_page - larg_texte) / 2
+        self.set_x(x_centre)
+        self.ecrire_mixte(texte, taille_texte, gras)
+
     def header_premiere_page(self, titre, description, esp_lignes):
-        self.set_y(4)
+        self.set_y(4)  # 4 mm depuis le haut de la page
         if any(est_emoji(c) for c in titre):
-            self.set_x(self.l_margin)
-            self.ecrire_mixte(titre, 18, gras=True)
+            self.ecrire_mixte_centre(titre, 18, gras=True)
             self.ln(12)
         else:
             self.set_font("DejaVu", "B", 18)
@@ -869,6 +972,11 @@ def traiter_image(args):
 
 
 def simuler_pages(ratios, hauteur, esp_notes, max3parligne, marge_fixe, y_depart, limite_bas):
+    """
+    Simulation arithmétique : calcule le nombre de pages nécessaires
+    pour placer toutes les photos avec la hauteur donnée, sans générer
+    de vrai PDF.  Reproduit exactement la logique de placement de construire_pdf.
+    """
     ESP_INTER     = 2
     largeur_utile = 210 - (2 * marge_fixe)
     pages         = 1
@@ -876,37 +984,84 @@ def simuler_pages(ratios, hauteur, esp_notes, max3parligne, marge_fixe, y_depart
     idx           = 0
     n_images      = len(ratios)
 
+    # Hauteur de référence basée sur le ratio moyen réel de toutes les photos.
+    # Utilisée comme plafond pour les lignes incomplètes (panoramas exclus).
+    ratio_moyen    = sum(ratios) / len(ratios) if ratios else 1.0
+    w_ligne_pleine = 3 * ratio_moyen * hauteur + 2 * ESP_INTER
+    h_reference    = hauteur * (largeur_utile / w_ligne_pleine) if w_ligne_pleine > largeur_utile else hauteur
+
     while idx < n_images:
-        max_n = min(3, n_images - idx) if max3parligne else (n_images - idx)
+        if max3parligne:
+            max_n = min(3, n_images - idx)
+        else:
+            max_n = n_images - idx
+
         n = 1
         for n_essai in range(max_n, 0, -1):
             larg_essai = [hauteur * r for r in ratios[idx:idx + n_essai]]
             if sum(larg_essai) + (n_essai - 1) * ESP_INTER <= largeur_utile or n_essai == 1:
                 n = n_essai
                 break
+
         w_total = sum(hauteur * r for r in ratios[idx:idx + n])
-        h_ligne = hauteur * (largeur_utile / w_total) if w_total > largeur_utile else hauteur
+        if w_total > largeur_utile:
+            # Panorama : réduit sans impacter les autres lignes
+            h_ligne = hauteur * (largeur_utile / w_total)
+        else:
+            # Ligne normale ou incomplète : plafonnée à h_reference
+            h_ligne = min(hauteur, h_reference)
+
         if y + h_ligne > limite_bas:
             pages += 1
             y      = marge_fixe
+
         y   += h_ligne + esp_notes
         idx += n
 
     return pages
 
 
+def chercher_hauteur_pour_pages(ratios, pages_cibles, esp_notes, max3parligne,
+                                 marge_fixe, y_depart, limite_bas,
+                                 hauteur_min=20, hauteur_max=200):
+    """Recherche binaire de la hauteur maximale donnant exactement pages_cibles pages."""
+    pages_min = simuler_pages(ratios, hauteur_min, esp_notes, max3parligne,
+                               marge_fixe, y_depart, limite_bas)
+    if pages_min > pages_cibles:
+        avert = (
+            f"La taille minimale de {hauteur_min}mm a été atteinte — "
+            f"le PDF contient {pages_min} page(s) au lieu de {pages_cibles}."
+        )
+        return hauteur_min, avert
+
+    bas, haut = hauteur_min, hauteur_max
+    meilleure = hauteur_min
+    for _ in range(30):
+        milieu = (bas + haut) / 2
+        pages  = simuler_pages(ratios, milieu, esp_notes, max3parligne,
+                                marge_fixe, y_depart, limite_bas)
+        if pages <= pages_cibles:
+            meilleure = milieu
+            bas       = milieu
+        else:
+            haut = milieu
+        if haut - bas < 0.1:
+            break
+    return meilleure, None
+
+
 def construire_pdf(titre, description, fichiers, esp_notes_mm, numerotation,
-                   max3parligne=True, ajuster_taille=True):
+                   max3parligne=True, ajuster_taille=True, pages_cibles=0):
     global POLICE_PATH, POLICE_EMOJI_PATH
     if POLICE_PATH is None:
         POLICE_PATH = trouver_dejavu()
     if POLICE_EMOJI_PATH is None:
         POLICE_EMOJI_PATH = trouver_noto_emoji()
 
-    HAUTEUR_DEFAUT = 43   # hauteur de base : 4,3 cm
-    HAUTEUR_MAX    = 200  # plafond de sécurité pour la boucle d'optimisation
-    PALIER         = 5    # pas d'augmentation : 0,5 cm
-    ESP_INTER      = 2    # espacement horizontal entre photos (mm)
+    HAUTEUR_DEFAUT = 43        # hauteur de base des photos : 4,3 cm
+    HAUTEUR_MAX    = 200       # plafond de sécurité pour la boucle d'optimisation
+    PALIER         = 5         # palier d'augmentation : 0,5 cm
+    ESP_INTER      = 2         # espacement entre photos (mm)
     marge_fixe     = 10
     esp_notes      = max(0, esp_notes_mm)
     bande_num      = 5 if numerotation else 0
@@ -920,6 +1075,7 @@ def construire_pdf(titre, description, fichiers, esp_notes_mm, numerotation,
     if not images_info:
         raise ValueError("Aucune image valide.")
 
+    # --- Initialisation du PDF pour obtenir le y_depart exact ---
     pdf = GenerateurPDF(POLICE_PATH, POLICE_EMOJI_PATH)
     pdf.set_auto_page_break(False)
     pdf.set_left_margin(marge_fixe)
@@ -942,24 +1098,29 @@ def construire_pdf(titre, description, fichiers, esp_notes_mm, numerotation,
         return marge_fixe
 
     y_depart_reel = nouvelle_page(premiere=True)
+    avertissement = None
 
     # --- Calcul de la hauteur optimale (simulation) ---
-    if ajuster_taille:
-        ratios    = [r for _, r in images_info]
-        pages_ref = simuler_pages(
-            ratios, HAUTEUR_DEFAUT, esp_notes, max3parligne,
+    ratios = [r for _, r in images_info]
+
+    if pages_cibles > 0:
+        # Mode pages cibles : recherche binaire
+        hauteur_choisie, avertissement = chercher_hauteur_pour_pages(
+            ratios, pages_cibles, esp_notes, max3parligne,
             marge_fixe, y_depart_reel, limite_bas
         )
+    elif ajuster_taille:
+        # Mode taille ajustée : on maximise la hauteur sans dépasser pages_ref
+        pages_ref       = simuler_pages(ratios, HAUTEUR_DEFAUT, esp_notes, max3parligne,
+                                        marge_fixe, y_depart_reel, limite_bas)
         hauteur_choisie = HAUTEUR_DEFAUT
         h_courant       = HAUTEUR_DEFAUT
 
         # Boucle bornée par HAUTEUR_MAX pour éviter toute boucle infinie
         while h_courant < HAUTEUR_MAX:
             h_candidat     = h_courant + PALIER
-            pages_candidat = simuler_pages(
-                ratios, h_candidat, esp_notes, max3parligne,
-                marge_fixe, y_depart_reel, limite_bas
-            )
+            pages_candidat = simuler_pages(ratios, h_candidat, esp_notes, max3parligne,
+                                           marge_fixe, y_depart_reel, limite_bas)
             if pages_candidat > pages_ref:
                 break
             hauteur_choisie = h_candidat
@@ -968,22 +1129,22 @@ def construire_pdf(titre, description, fichiers, esp_notes_mm, numerotation,
         hauteur_choisie = HAUTEUR_DEFAUT
 
     HAUTEUR_FIXE = hauteur_choisie
+    y_actuel     = y_depart_reel
 
-    # --- Hauteur de référence basée sur les vrais ratios moyens ---
-    # Utilisée comme plafond pour les lignes incomplètes (< max photos)
-    # afin qu'elles ne soient jamais disproportionnées.
+    # Hauteur de référence basée sur le ratio moyen réel de toutes les photos.
+    # Plafond pour les lignes incomplètes — évite qu'une dernière ligne seule
+    # soit disproportionnée, sans pénaliser les lignes normales.
     ratios_tous    = [r for _, r in images_info]
     ratio_moyen    = sum(ratios_tous) / len(ratios_tous)
     w_ligne_pleine = 3 * ratio_moyen * HAUTEUR_FIXE + 2 * ESP_INTER
-    if w_ligne_pleine > largeur_utile:
-        h_reference = HAUTEUR_FIXE * (largeur_utile / w_ligne_pleine)
-    else:
-        h_reference = HAUTEUR_FIXE
-
-    y_actuel = y_depart_reel
+    h_reference    = HAUTEUR_FIXE * (largeur_utile / w_ligne_pleine) if w_ligne_pleine > largeur_utile else HAUTEUR_FIXE
 
     while restantes:
-        max_n = min(3, len(restantes)) if max3parligne else len(restantes)
+        # Déterminer combien d'images tenir sur cette ligne.
+        if max3parligne:
+            max_n = min(3, len(restantes))
+        else:
+            max_n = len(restantes)
 
         n = 1
         for n_essai in range(max_n, 0, -1):
@@ -997,25 +1158,24 @@ def construire_pdf(titre, description, fichiers, esp_notes_mm, numerotation,
         w_total_th  = sum(largeurs_th)
 
         if w_total_th > largeur_utile:
-            # Ligne trop large (panorama) : on réduit proportionnellement
-            # sans impacter la hauteur des autres lignes
+            # Panorama : réduit proportionnellement sans impacter les autres lignes
             h_ligne = HAUTEUR_FIXE * (largeur_utile / w_total_th)
         else:
             # Ligne normale ou incomplète : plafonnée à h_reference
-            # pour éviter qu'une dernière ligne seule ne soit géante
             h_ligne = min(HAUTEUR_FIXE, h_reference)
 
-        # Recalcul des largeurs avec la hauteur finale
-        ratio_final  = h_ligne / HAUTEUR_FIXE
-        largeurs     = [w * ratio_final for w in largeurs_th]
+        # Recalcul des largeurs avec la hauteur harmonisée
+        ratio_final = h_ligne / HAUTEUR_FIXE
+        largeurs = [w * ratio_final for w in largeurs_th]
         w_total_reel = sum(largeurs)
 
         if n == 1:
             esp_reel = 0
             x_depart = marge_fixe + (largeur_utile - w_total_reel) / 2
         else:
-            esp_reel = (largeur_utile - w_total_reel) / (n - 1)
-            x_depart = marge_fixe
+            espace_libre = largeur_utile - w_total_reel
+            esp_reel     = espace_libre / (n - 1) if n > 1 else 0
+            x_depart     = marge_fixe
 
         if y_actuel + h_ligne > limite_bas:
             if numerotation:
@@ -1040,7 +1200,7 @@ def construire_pdf(titre, description, fichiers, esp_notes_mm, numerotation,
     out = io.BytesIO()
     pdf.output(out)
     out.seek(0)
-    return out
+    return out, avertissement
 
 
 # --- Routes Flask ---
@@ -1071,17 +1231,30 @@ def preview():
 
 @app.route('/generer', methods=['POST'])
 def generer():
+    from flask import make_response
+
     titre          = request.form.get('titre', '').strip()
     description    = request.form.get('description', '').strip()
     fichiers       = request.files.getlist('photos')
-    numerotation   = request.form.get('numerotation',   '0') == '1'
-    max3parligne   = request.form.get('max3parligne',   '1') == '1'
-    ajuster_taille = request.form.get('ajustertaille',  '1') == '1'
+    numerotation   = request.form.get('numerotation',  '0') == '1'
+    max3parligne   = request.form.get('max3parligne',  '1') == '1'
+    ajuster_taille = request.form.get('ajustertaille', '1') == '1'
 
     try:
         esp_notes_mm = int(request.form.get('esp_notes', '16'))
     except (ValueError, TypeError):
         esp_notes_mm = 16
+
+    try:
+        pages_cibles = int(request.form.get('pages_cibles', '0'))
+        if pages_cibles < 0:
+            pages_cibles = 0
+    except (ValueError, TypeError):
+        pages_cibles = 0
+
+    # pages_cibles > 0 désactive ajuster_taille (mutuellement exclusifs)
+    if pages_cibles > 0:
+        ajuster_taille = False
 
     if not titre:
         return jsonify({'erreur': 'Le titre est obligatoire.'}), 400
@@ -1089,20 +1262,24 @@ def generer():
         return jsonify({'erreur': 'Sélectionnez au moins une photo.'}), 400
 
     try:
-        pdf_buf = construire_pdf(
+        pdf_buf, avertissement = construire_pdf(
             titre, description, fichiers,
-            esp_notes_mm, numerotation, max3parligne, ajuster_taille
+            esp_notes_mm, numerotation, max3parligne,
+            ajuster_taille, pages_cibles
         )
         nom_fichier = "".join(
             c for c in titre if c.isalnum() or c in (' ', '_')
         ).strip().replace(' ', '_') or 'Album'
 
-        return send_file(
+        reponse = make_response(send_file(
             pdf_buf,
             mimetype='application/pdf',
             as_attachment=True,
             download_name=f"{nom_fichier}.pdf"
-        )
+        ))
+        if avertissement:
+            reponse.headers['X-Avertissement'] = avertissement
+        return reponse
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
